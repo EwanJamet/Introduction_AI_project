@@ -92,20 +92,20 @@ RESET_TRAINING = True
 """
     RL algorithm parameters.
 """
-QPLUS = True#new function with new parameter epsilon, allow to minimize the future reward
-MAX_EXPERIENCE_SIZE = 1000
-EXPERIENCE_MIN_SIZE_FOR_TRAINING = 1000
+QPLUS = False #new function with new parameter epsilon, allow to minimize the future reward
+MAX_EXPERIENCE_SIZE = 100
+EXPERIENCE_MIN_SIZE_FOR_TRAINING = 10
 NB_BATCHES = 16
 BATCH_SIZE = 32
 DISCOUNT_FACTOR = 0.9
-EPSILON = 0.7
+EPSILON = 0.7 #more this parameter goes up the more it will not take account of the future state.
 #####################################################################################################################################################
 
 """
     Parameters of the optimizer used to train the model.
 """
 
-LOSS_FUNCTION = torch.nn.CrossEntropyLoss()
+LOSS_FUNCTION = torch.nn.CrossEntropyLoss(reduction="sum")
 LEARNING_RATE = 0.1
 
 #####################################################################################################################################################
@@ -114,7 +114,7 @@ LEARNING_RATE = 0.1
     Number of PyRat games from which to learn.
 """
 
-NB_EPISODES = 1000
+NB_EPISODES = 100
 
 #####################################################################################################################################################
 
@@ -149,7 +149,9 @@ class DQN (torch.nn.Module):
     #############################################################################################################################################
 
     def __init__ ( self:              Self,
-                   data_shape:        Tuple[int, ...],
+                   input_size: int,
+                    hidden_size : int,
+                    num_layers: int,
                    actions_dimension: int
                  ) ->                 Self:
 
@@ -167,33 +169,26 @@ class DQN (torch.nn.Module):
 
         # Define the layers
 
-        # self.count = 0
 
-        self.linear1 = torch.nn.Linear(1900, 128)
-        self.linear2 = torch.nn.Linear(128, 32)
-        self.linear3 = torch.nn.Linear(32, actions_dimension)
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+
+        self.linear = torch.nn.Linear(hidden_size, actions_dimension)
  
-        self.rnn = torch.nn.RNN(19,50,4)                       
-                                        
-        self.bn1 = torch.nn.BatchNorm2d(2)
+        self.rnn = torch.nn.RNN(input_size,hidden_size,num_layers, batch_first = True)                       
+
 
         """Initialisation of the weight"""
         self.init_weight()
 
         #sequential 
-        
-        self.linear = torch.nn.Sequential(torch.nn.Flatten(),
-                                          self.linear1,
-                                          self.linear2,
-                                          self.linear3)
+
+
         
     def init_weight(self):
 
-        init_layer(self.linear1)
-        init_layer(self.linear2)
-        init_layer(self.linear3)
-
-        init_bn(self.bn1)
+        init_layer(self.linear)
 
                                     
         
@@ -217,12 +212,11 @@ class DQN (torch.nn.Module):
         #il va falloir changer la dimension du RNN en entrainement et en inférence
         #en entrainement on a BATCHSIZE * NBRPLAYER * 19*19 dim labyrinth et en inférence on a 1 * NBPLAYER*DIMLAB 
         x = x.float()
-        x = self.bn1(x)
-        x = torch.squeeze(x, dim=0)
-        ho = torch.zeros(4,19,50)
-        print("x.shape = ",x.shape)
-        x, hn = self.rnn(x,ho)
-        x = torch.unsqueeze(x,dim=0)
+        # print("x = ",x.shape)
+        x =  x.reshape(-1,38,self.input_size)
+        ho = torch.zeros(self.num_layers,x.size(0),self.hidden_size)
+        x, _ = self.rnn(x,ho)
+        x = x[:,-1,:]
         x = self.linear(x)
         return x
     
@@ -425,7 +419,7 @@ def make_batch ( model:            DQN,
             else:
                 model_outputs = model(experience[indices[i]]["new_state"].unsqueeze(0))
                 if QPLUS:
-                     targets[i, possible_actions.index(experience[indices[i]]["action"])] += alpha * (experience[indices[i]]["reward"] + DISCOUNT_FACTOR * torch.max(model_outputs).item() - targets[i, possible_actions.index(experience[indices[i]]["action"])])
+                    targets[i, possible_actions.index(experience[indices[i]]["action"])] += alpha * (experience[indices[i]]["reward"] + DISCOUNT_FACTOR * torch.max(model_outputs).item() - targets[i, possible_actions.index(experience[indices[i]]["action"])])
                 else :
                     targets[i, possible_actions.index(experience[indices[i]]["action"])] =  experience[indices[i]]["reward"] + DISCOUNT_FACTOR * torch.max(model_outputs).item() 
 
@@ -476,7 +470,7 @@ def train_model ( model:            DQN,
         optimizer.step()
         # scheduler.step()
         #lr_list.append(optimizer.state_dict()['param_groups'][0]['lr'])
-        
+        print("loss = ", loss)
         # Accumulate total loss for debug
         total_loss += loss.item()
 
@@ -521,8 +515,12 @@ def preprocessing ( maze:             Union[numpy.ndarray, Dict[int, Dict[int, i
     
     # Instanciate a DQN model with weights loaded from file (if any)
     state_dimension = build_state(maze, maze_width, maze_height, name, teams, player_locations, cheese).shape
+    # print("state_dimension = ",state_dimension)
+    hidden_size = 500
+    input_size = state_dimension[2]
+    num_layers = 2
     actions_dimension = len(possible_actions)
-    memory.model = DQN(state_dimension, actions_dimension)
+    memory.model = DQN(input_size,hidden_size,num_layers,actions_dimension=actions_dimension) #to define
     if os.path.exists(MODEL_FILE_NAME):
         memory.model.load_state_dict(torch.load(MODEL_FILE_NAME))
     
