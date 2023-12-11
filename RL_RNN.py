@@ -47,6 +47,7 @@ from pyrat import *
 
 # External imports 
 import torch.nn as nn
+import torch.nn.functional as F
 import torch
 import random
 import numpy
@@ -97,16 +98,20 @@ MAX_EXPERIENCE_SIZE = 100
 EXPERIENCE_MIN_SIZE_FOR_TRAINING = 10
 NB_BATCHES = 16
 BATCH_SIZE = 32
-DISCOUNT_FACTOR = 0.9
+DISCOUNT_FACTOR = 0.8
 EPSILON = 0.7 #more this parameter goes up the more it will not take account of the future state.
+CLIP_VALUE = 10
+
+
 #####################################################################################################################################################
 
 """
     Parameters of the optimizer used to train the model.
 """
+LOSS_FUNCTION = torch.nn.MSELoss()
 
-LOSS_FUNCTION = torch.nn.CrossEntropyLoss(reduction="sum")
-LEARNING_RATE = 0.1
+
+LEARNING_RATE = 0.2
 
 #####################################################################################################################################################
 
@@ -176,9 +181,10 @@ class DQN (torch.nn.Module):
 
         self.linear = torch.nn.Linear(hidden_size, actions_dimension)
  
-        self.rnn = torch.nn.RNN(input_size,hidden_size,num_layers, batch_first = True)                       
-
-
+        self.rnn = torch.nn.RNN(input_size**2,hidden_size,num_layers, batch_first = True)                       
+        
+        self.bn1 = torch.nn.BatchNorm1d(2)
+        
         """Initialisation of the weight"""
         self.init_weight()
 
@@ -189,7 +195,7 @@ class DQN (torch.nn.Module):
     def init_weight(self):
 
         init_layer(self.linear)
-
+        init_bn(self.bn1)
                                     
         
     #############################################################################################################################################
@@ -213,9 +219,14 @@ class DQN (torch.nn.Module):
         #en entrainement on a BATCHSIZE * NBRPLAYER * 19*19 dim labyrinth et en inférence on a 1 * NBPLAYER*DIMLAB 
         x = x.float()
         # print("x = ",x.shape)
-        x =  x.reshape(-1,38,self.input_size)
+        x =  x.reshape(-1,2,self.input_size**2)
+        
         ho = torch.zeros(self.num_layers,x.size(0),self.hidden_size)
         x, _ = self.rnn(x,ho)
+        # print("x = ",x.shape)
+        # x = torch.unsqueeze(x,dim=0)
+        # print("x = ",x.shape)
+        x  = F.relu_(self.bn1(x))
         x = x[:,-1,:]
         x = self.linear(x)
         return x
@@ -452,7 +463,7 @@ def train_model ( model:            DQN,
 
     # Ensure model is in train mode
     model.train()
-   
+    
     # Train loop
     total_loss = 0
     for b in range(NB_BATCHES):
@@ -461,12 +472,23 @@ def train_model ( model:            DQN,
         data, targets = make_batch(model, experience, possible_actions)
         
         # Reset gradients
+        
+        
         optimizer.zero_grad()
         
         # Forward + backward + optimize
         outputs = model(data)
+        # targets=F.normalize(outputs,dim=1)
+        # targets=F.normalize(targets,dim=1)
         loss = LOSS_FUNCTION(outputs, targets)
+
         loss.backward()
+
+        #trying a clip 
+        # for p in model.parameters():
+        #     p.register_hook(lambda grad: torch.clamp(grad, -CLIP_VALUE,CLIP_VALUE))
+        torch.nn.utils.clip_grad_norm(model.parameters(), CLIP_VALUE)
+        
         optimizer.step()
         # scheduler.step()
         #lr_list.append(optimizer.state_dict()['param_groups'][0]['lr'])
@@ -516,7 +538,7 @@ def preprocessing ( maze:             Union[numpy.ndarray, Dict[int, Dict[int, i
     # Instanciate a DQN model with weights loaded from file (if any)
     state_dimension = build_state(maze, maze_width, maze_height, name, teams, player_locations, cheese).shape
     # print("state_dimension = ",state_dimension)
-    hidden_size = 500
+    hidden_size = 19*19
     input_size = state_dimension[2]
     num_layers = 2
     actions_dimension = len(possible_actions)
@@ -724,25 +746,6 @@ if __name__ == "__main__":
             f.write(text)
             f.close()
 
-        if SAVE_PARAMETERS:
-            text = ""
-            text += "PARAMETERS :\n\r"
-            text += "QPLUS : "+  str(QPLUS) + "\n\r"
-            text += "LOSS_FUNCTION : "+  str(LOSS_FUNCTION) + "\n\r"
-            text += "MAX_EXPERIENCE_SIZE : "+  str(MAX_EXPERIENCE_SIZE) + "\n\r"
-            text += "EXPERIENCE_MIN_SIZE_FOR_TRAINING : "+  str(EXPERIENCE_MIN_SIZE_FOR_TRAINING) + "\n\r"
-            text += "NB_BATCHES : "+  str(NB_BATCHES) + "\n\r"
-            text += "BATCH_SIZE : "+  str(BATCH_SIZE) + "\n\r" 
-            text += "DISCOUNT_FACTOR : "+  str(DISCOUNT_FACTOR) + "\n\r" 
-            text += "EPSILON : "+  str(EPSILON) + "\n\r" 
-            text += "LEARNING_RATE : "+  str(LEARNING_RATE) + "\n\r" 
-            text += "NB_EPISODES : "+  str(NB_EPISODES) + "\n\r" 
-            text += "\n\n"
-            text += "Write here the shape of the neural network :\n\n"
-
-            f = open(OUTPUT_DIRECTORY+'/parameters.txt', "w")
-            f.write(text)
-            f.close()
 
         
         # Connect to WandB for monitoring
